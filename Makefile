@@ -79,9 +79,23 @@ BASELINE_SYNC_TARGET := baseline-sync-invalid
 BASELINE_SYNC_CHECK_TARGET := baseline-sync-invalid
 endif
 
+ifeq ($(BASELINE_SOURCE_KIND),aiscb)
+BASELINE_SYNC_LATEST_TARGET := baseline-sync-latest-aiscb
+else ifeq ($(BASELINE_SOURCE_KIND),organization)
+BASELINE_SYNC_LATEST_TARGET := baseline-sync-latest-organization
+else ifeq ($(BASELINE_SOURCE_KIND),organization-git)
+BASELINE_SYNC_LATEST_TARGET := baseline-sync-latest-organization-git
+else ifeq ($(BASELINE_SOURCE_KIND),organization-https)
+BASELINE_SYNC_LATEST_TARGET := baseline-sync-latest-organization-https
+else ifeq ($(BASELINE_SOURCE_KIND),disabled)
+BASELINE_SYNC_LATEST_TARGET := baseline-sync-latest-disabled
+else
+BASELINE_SYNC_LATEST_TARGET := baseline-sync-latest-invalid
+endif
+
 .DEFAULT_GOAL := help
 
-.PHONY: help lint check release release-check fetch-upstream upstream-check packaging-template-check baseline-check baseline-sync baseline-sync-check baseline-sync-aiscb baseline-sync-check-aiscb baseline-sync-organization baseline-sync-check-organization baseline-sync-organization-git baseline-sync-check-organization-git baseline-sync-organization-https baseline-sync-check-organization-https baseline-sync-disabled baseline-sync-check-disabled baseline-sync-invalid check-updates drift-check upstream-update org-baseline-sync org-baseline-sync-check validate package release-package package-archive local-marketplace install-local smoke ci-github ci-gitlab clean rebuild reinit test
+.PHONY: help lint check release release-check fetch-upstream upstream-check packaging-template-check baseline-check baseline-sync baseline-sync-check baseline-sync-latest baseline-sync-aiscb baseline-sync-check-aiscb baseline-sync-latest-aiscb baseline-sync-organization baseline-sync-check-organization baseline-sync-latest-organization baseline-sync-organization-git baseline-sync-check-organization-git baseline-sync-latest-organization-git baseline-sync-organization-https baseline-sync-check-organization-https baseline-sync-latest-organization-https baseline-sync-disabled baseline-sync-check-disabled baseline-sync-latest-disabled baseline-sync-invalid baseline-sync-latest-invalid check-updates drift-check upstream-update org-baseline-sync org-baseline-sync-check validate package release-package package-archive local-marketplace install-local smoke ci-github ci-gitlab clean rebuild reinit test
 
 help: ## Show this help
 	@if [ -t 1 ] && [ -z "$${NO_COLOR:-}" ]; then \
@@ -227,6 +241,14 @@ baseline-sync-check: $(BASELINE_SYNC_CHECK_TARGET) ## Read-only drift check for 
 # skills when organization mode is selected.
 baseline-check: baseline-sync-check ## Read-only drift check for the configured secure-coding baseline
 
+# Convenience wrapper around baseline-sync: whatever id the source currently
+# publishes is accepted without a human typing it back. This skips the review
+# gate baseline-sync exists to enforce (see the comment above BASELINE_SYNC) —
+# use it only where blindly trusting the source's current content is
+# acceptable, not as the default team workflow. Dispatches by
+# BASELINE_SOURCE_KIND like baseline-sync itself.
+baseline-sync-latest: $(BASELINE_SYNC_LATEST_TARGET) ## Re-vendor the baseline, auto-accepting whatever id the source currently publishes (skips the review gate)
+
 baseline-sync-aiscb: $(FETCH_TARGET)
 	@python3 $(BASELINE_SYNC) --help 2>/dev/null | grep -q -- --profile || { $(BASELINE_SYNC_MISSING); }; \
 	status=0; \
@@ -235,6 +257,24 @@ baseline-sync-aiscb: $(FETCH_TARGET)
 	if [ "$$status" -eq 3 ]; then \
 		echo "NOTE: a new baseline id is a decision — re-run with ACCEPT_ID=<id> to move file and profile together."; \
 	fi; \
+	exit $$status
+
+baseline-sync-latest-aiscb: $(FETCH_TARGET)
+	@python3 $(BASELINE_SYNC) --help 2>/dev/null | grep -q -- --profile || { $(BASELINE_SYNC_MISSING); }; \
+	out="$$(python3 $(BASELINE_SYNC) --profile org-profile/org-profile.yaml 2>&1)"; status=$$?; \
+	if [ "$$status" -eq 3 ]; then \
+		published="$$(printf '%s\n' "$$out" | grep -oE "publishes '?[A-Za-z0-9][A-Za-z0-9._+-]*'?" | head -1)"; \
+		published="$${published#publishes }"; published="$${published%\'}"; published="$${published#\'}"; \
+		if [ -z "$$published" ]; then \
+			echo "ERROR: could not parse the published id from sync output" >&2; \
+			printf '%s\n' "$$out" >&2; \
+			exit 2; \
+		fi; \
+		echo "NOTE: auto-accepting published id $$published"; \
+		python3 $(BASELINE_SYNC) --profile org-profile/org-profile.yaml --accept-id "$$published"; \
+		exit $$?; \
+	fi; \
+	printf '%s\n' "$$out"; \
 	exit $$status
 
 baseline-sync-check-aiscb: $(FETCH_TARGET)
@@ -286,6 +326,29 @@ baseline-sync-organization:
 	fi; \
 	exit $$status
 
+baseline-sync-latest-organization:
+	@if [ -z "$(ORG_BASELINE_SOURCE)" ] || [ -z "$(ORG_BASELINE_DOC)" ]; then $(ORG_BASELINE_CONFIG_MISSING); fi; \
+	skills_dir="$(ORG_BASELINE_SKILLS_DIR)"; \
+	out="$$(python3 scripts/sync-org-baseline.py --org-profile org-profile --org-skills org-skills \
+		--checkout "$(ORG_BASELINE_SOURCE)" --doc "$(ORG_BASELINE_DOC)" \
+		$${skills_dir:+--skills-dir "$$skills_dir"} --write 2>&1)"; status=$$?; \
+	if [ "$$status" -eq 3 ]; then \
+		published="$$(printf '%s\n' "$$out" | grep -oE "publishes '?[A-Za-z0-9][A-Za-z0-9._+-]*'?" | head -1)"; \
+		published="$${published#publishes }"; published="$${published%\'}"; published="$${published#\'}"; \
+		if [ -z "$$published" ]; then \
+			echo "ERROR: could not parse the published id from sync output" >&2; \
+			printf '%s\n' "$$out" >&2; \
+			exit 2; \
+		fi; \
+		echo "NOTE: auto-accepting published id $$published"; \
+		python3 scripts/sync-org-baseline.py --org-profile org-profile --org-skills org-skills \
+			--checkout "$(ORG_BASELINE_SOURCE)" --doc "$(ORG_BASELINE_DOC)" \
+			$${skills_dir:+--skills-dir "$$skills_dir"} --accept-id "$$published" --write; \
+		exit $$?; \
+	fi; \
+	printf '%s\n' "$$out"; \
+	exit $$status
+
 baseline-sync-check-organization-git:
 	@if { [ -z "$(ORG_BASELINE_SOURCE)" ] && [ -z "$(ORG_BASELINE_URL)" ]; } || [ -z "$(ORG_BASELINE_REF)" ] || [ -z "$(ORG_BASELINE_DOC)" ]; then $(ORG_BASELINE_GIT_CONFIG_MISSING); fi; \
 	set -- --org-profile org-profile --org-skills org-skills --manage-skills; \
@@ -307,6 +370,28 @@ baseline-sync-organization-git:
 	if [ "$$status" -eq 3 ]; then echo "NOTE: a new baseline id is a decision — re-run with ACCEPT_ID=<id> to move file and profile together."; fi; \
 	exit $$status
 
+baseline-sync-latest-organization-git:
+	@if { [ -z "$(ORG_BASELINE_SOURCE)" ] && [ -z "$(ORG_BASELINE_URL)" ]; } || [ -z "$(ORG_BASELINE_REF)" ] || [ -z "$(ORG_BASELINE_DOC)" ]; then $(ORG_BASELINE_GIT_CONFIG_MISSING); fi; \
+	set -- --org-profile org-profile --org-skills org-skills --manage-skills; \
+	if [ -n "$(ORG_BASELINE_SOURCE)" ]; then set -- "$$@" --checkout "$(ORG_BASELINE_SOURCE)"; else set -- "$$@" --git-url "$(ORG_BASELINE_URL)" --git-ref "$(ORG_BASELINE_REF)"; fi; \
+	set -- "$$@" --doc "$(ORG_BASELINE_DOC)"; \
+	if [ -n "$(ORG_BASELINE_SKILLS_DIR)" ]; then set -- "$$@" --skills-dir "$(ORG_BASELINE_SKILLS_DIR)"; fi; \
+	out="$$(python3 scripts/sync-org-baseline.py "$$@" --write 2>&1)"; status=$$?; \
+	if [ "$$status" -eq 3 ]; then \
+		published="$$(printf '%s\n' "$$out" | grep -oE "publishes '?[A-Za-z0-9][A-Za-z0-9._+-]*'?" | head -1)"; \
+		published="$${published#publishes }"; published="$${published%\'}"; published="$${published#\'}"; \
+		if [ -z "$$published" ]; then \
+			echo "ERROR: could not parse the published id from sync output" >&2; \
+			printf '%s\n' "$$out" >&2; \
+			exit 2; \
+		fi; \
+		echo "NOTE: auto-accepting published id $$published"; \
+		python3 scripts/sync-org-baseline.py "$$@" --accept-id "$$published" --write; \
+		exit $$?; \
+	fi; \
+	printf '%s\n' "$$out"; \
+	exit $$status
+
 baseline-sync-check-organization-https:
 	@if [ -z "$(ORG_BASELINE_URL)" ] || [ -n "$(ORG_BASELINE_SKILLS_DIR)" ]; then $(ORG_BASELINE_HTTPS_CONFIG_MISSING); fi; \
 	status=0; python3 scripts/sync-org-baseline.py --org-profile org-profile --org-skills org-skills \
@@ -322,13 +407,40 @@ baseline-sync-organization-https:
 	if [ "$$status" -eq 3 ]; then echo "NOTE: a new baseline id is a decision — re-run with ACCEPT_ID=<id> to move file and profile together."; fi; \
 	exit $$status
 
+baseline-sync-latest-organization-https:
+	@if [ -z "$(ORG_BASELINE_URL)" ] || [ -n "$(ORG_BASELINE_SKILLS_DIR)" ]; then $(ORG_BASELINE_HTTPS_CONFIG_MISSING); fi; \
+	out="$$(python3 scripts/sync-org-baseline.py --org-profile org-profile --org-skills org-skills \
+		--https-url "$(ORG_BASELINE_URL)" --write 2>&1)"; status=$$?; \
+	if [ "$$status" -eq 3 ]; then \
+		published="$$(printf '%s\n' "$$out" | grep -oE "publishes '?[A-Za-z0-9][A-Za-z0-9._+-]*'?" | head -1)"; \
+		published="$${published#publishes }"; published="$${published%\'}"; published="$${published#\'}"; \
+		if [ -z "$$published" ]; then \
+			echo "ERROR: could not parse the published id from sync output" >&2; \
+			printf '%s\n' "$$out" >&2; \
+			exit 2; \
+		fi; \
+		echo "NOTE: auto-accepting published id $$published"; \
+		python3 scripts/sync-org-baseline.py --org-profile org-profile --org-skills org-skills \
+			--https-url "$(ORG_BASELINE_URL)" --accept-id "$$published" --write; \
+		exit $$?; \
+	fi; \
+	printf '%s\n' "$$out"; \
+	exit $$status
+
 baseline-sync-disabled:
 	@echo "SKIP: secure-coding baseline is disabled"
 
 baseline-sync-check-disabled:
 	@echo "SKIP: secure-coding baseline is disabled"
 
+baseline-sync-latest-disabled:
+	@echo "SKIP: secure-coding baseline is disabled"
+
 baseline-sync-invalid:
+	@echo "ERROR: BASELINE_SOURCE_KIND must be aiscb, organization-git, organization-https, or disabled; got '$(BASELINE_SOURCE_KIND)'" >&2
+	@exit 2
+
+baseline-sync-latest-invalid:
 	@echo "ERROR: BASELINE_SOURCE_KIND must be aiscb, organization-git, organization-https, or disabled; got '$(BASELINE_SOURCE_KIND)'" >&2
 	@exit 2
 
