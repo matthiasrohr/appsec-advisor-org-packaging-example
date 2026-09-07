@@ -161,6 +161,13 @@ class SyncOrgBaselineTests(unittest.TestCase):
         with self.assertRaisesRegex(syncer.SyncError, "exactly one baseline-id"):
             syncer.plan(self.make_args())
 
+    def test_html_document_is_named_as_html_not_as_a_missing_marker(self) -> None:
+        (self.checkout / "baseline.md").write_text(
+            "<!DOCTYPE html>\n<html><body>Sign in</body></html>\n", encoding="utf-8"
+        )
+        with self.assertRaisesRegex(syncer.SyncError, "looks like an HTML page"):
+            syncer.plan(self.make_args())
+
     def test_duplicate_identical_markers_are_rejected(self) -> None:
         (self.checkout / "baseline.md").write_text(
             "baseline-id: acme-sec-1.0.0\nbaseline-id: acme-sec-1.0.0\n",

@@ -49,6 +49,11 @@ MARKER_PATTERN = re.compile(
     r"([A-Za-z0-9](?:[A-Za-z0-9._+-]{0,78}[A-Za-z0-9])?)`?"
     r"(?:[ \t.,;:\u2014-].*)?$"
 )
+# A cheap, application-agnostic signal that a fetch landed on a login page, an
+# error page, or a web UI wrapper instead of the baseline document it asked
+# for \u2014 the case the marker check alone reports only as "found none", which
+# reads as a defect in the document rather than in what was fetched.
+_HTML_SNIFF_PATTERN = re.compile(r"^\s*<(!doctype\s+html|html\b)", re.IGNORECASE)
 
 
 class SyncError(ValueError):
@@ -91,6 +96,11 @@ def _marker(document: bytes, origin: str) -> str:
         raise SyncError(f"baseline document is not UTF-8: {origin}") from error
     ids = MARKER_PATTERN.findall(text)
     if len(ids) != 1:
+        if not ids and _HTML_SNIFF_PATTERN.match(text[:512]):
+            raise SyncError(
+                f"document looks like an HTML page, not the baseline document "
+                f"(likely a login page or redirect): {origin}"
+            )
         detail = "none" if not ids else ", ".join(ids)
         raise SyncError(
             f"document must contain exactly one baseline-id marker; found {detail}: {origin}"
